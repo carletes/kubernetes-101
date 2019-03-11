@@ -808,7 +808,6 @@ $
 When a Kubernetes service has several pod candidates that it may
 forward requests to, it load-balances requests.
 
-
 Let's clean up first:
 
 ```
@@ -1014,7 +1013,8 @@ $
 ## Persistent volumes
 
 Persistent volumes are Kubernetes objects that provide persistent
-storage.
+storage. Persistent volumes have their own life-cycle span,
+independent of pods.
 
 There are [many types of persistent
 volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes). Some
@@ -1177,14 +1177,14 @@ Welcome to the European Weather Cloud
 $
 ```
 
-## Deployments
+## Replica sets
 
 So far we have:
 
 * A way to run processes in a Kubernetes cluster (pods).
 * A way to use persistent storage in a Kubernetes cluster (persistent
   volumes).
-* A way to give oour pods stable network identity, and make them
+* A way to give our pods stable network identity, and make them
   accessible from the outside world (services).
 
 Pods are still ephemeral, though:
@@ -1193,16 +1193,169 @@ Pods are still ephemeral, though:
   maintenance.
 * We may accidentally remove a pod.
 
-With Kubernetes *deployments* we may now ensure that:
+With Kubernetes *replica sets* we may now ensure that there are always
+a minimum number of copies of a given pod running.
 
-* A given pod is recreated (if a Kubernetes node goes down, for
-  instance).
-* There are always a minimum number of copies of a given pod (so that
-  we may do zero-downtime upgrades, for instance).
+An example:
+
+```
+$ kubectl -n kubernetes-101 apply -f - <<EOT
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: replicated-web-site
+spec:
+  # modify replicas according to your case
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sample-website
+  template:
+    metadata:
+      labels:
+        app: sample-website
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+EOT
+replicaset.apps/replicated-web-site created
+$
+
+```
+
+A replica set controller has been now created in the Kubernetes
+control plane:
+
+```
+$ kubectl -n kubernetes-101 get rs
+NAME                  DESIRED   CURRENT   READY   AGE
+replicated-web-site   3         3         0       72s
+$
+```
 
 
-Let's create now a Kubernetes deployment for our sample web site with
-just one replica:
+The controller is now busy creating pods according to its template:
+
+
+```
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS              RESTARTS   AGE
+replicated-web-site-4zgg5   1/1     Running             0          7s
+replicated-web-site-glckj   0/1     ContainerCreating   0          7s
+replicated-web-site-xwv9x   1/1     Running             0          7s
+$
+```
+
+At some point all pods are hopefully up and running:
+
+```
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+replicated-web-site-4zgg5   1/1     Running   0          40s
+replicated-web-site-glckj   1/1     Running   0          40s
+replicated-web-site-xwv9x   1/1     Running   0          40s
+$
+```
+
+If one pod dies or gets killed, the replication controller creates
+another copy:
+
+```
+$ kubectl -n kubernetes-101 delete pod replicated-web-site-4zgg5
+pod "replicated-web-site-4zgg5" deleted
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS              RESTARTS   AGE
+replicated-web-site-glckj   1/1     Running             0          88s
+replicated-web-site-mf5cg   0/1     ContainerCreating   0          3s
+replicated-web-site-xwv9x   1/1     Running             0          88s
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+replicated-web-site-glckj   1/1     Running   0          98s
+replicated-web-site-mf5cg   1/1     Running   0          13s
+replicated-web-site-xwv9x   1/1     Running   0          98s
+$
+```
+
+The number of replicas can be increased in-situ by patching the
+replica set controller:
+
+```
+$ kubectl -n kubernetes-101 patch rs replicated-web-site -p '{"spec": {"replicas": 4}}'
+replicaset.extensions/replicated-web-site patched
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+replicated-web-site-glckj   1/1     Running   0          10m
+replicated-web-site-k7hwm   1/1     Running   0          8s
+replicated-web-site-mf5cg   1/1     Running   0          9m23s
+replicated-web-site-xwv9x   1/1     Running   0          10m
+$
+```
+
+We may also reduce the number of replicas, and the Kubernetes replica
+set controller will remove as many as needed:
+
+```
+$ kubectl -n kubernetes-101 patch rs replicated-web-site -p '{"spec": {"replicas": 2}}'
+replicaset.extensions/replicated-web-site patched
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS        RESTARTS   AGE
+replicated-web-site-glckj   1/1     Running       0          10m
+replicated-web-site-k7hwm   0/1     Terminating   0          17s
+replicated-web-site-mf5cg   0/1     Terminating   0          9m32s
+replicated-web-site-xwv9x   1/1     Running       0          10m
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+replicated-web-site-glckj   1/1     Running   0          11m
+replicated-web-site-xwv9x   1/1     Running   0          11m
+$
+```
+
+If we delete the replica set controller itself, Kubernetes will delete
+all the pods that it controls:
+
+```
+$ kubectl -n kubernetes-101 delete rs --all
+replicaset.extensions "replicated-web-site" deleted
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS        RESTARTS   AGE
+replicated-web-site-glckj   0/1     Terminating   0          12m
+replicated-web-site-xwv9x   0/1     Terminating   0          12m
+$ kubectl -n kubernetes-101 get pods
+NAME                        READY   STATUS        RESTARTS   AGE
+replicated-web-site-glckj   0/1     Terminating   0          12m
+$ kubectl -n kubernetes-101 get pods
+No resources found.
+carlos@ubuntu-vm:~/src/kubernetes-101$
+```
+
+## Deployments
+
+So far we have:
+
+* A way to run processes in a Kubernetes cluster (pods).
+* A way to use persistent storage in a Kubernetes cluster (persistent
+  volumes).
+* A way to give our pods stable network identity, and make them
+  accessible from the outside world (services).
+* A way to ensure there are always a given number of copies of a given
+  process (replica sets).
+
+Following with our web site example, if we wanted to upgrade the
+software running it, we would need to do the following:
+
+* Remove the replica set controlling it.
+* Create a new replica set with a template using the updated container
+  images.
+
+With Kubernetes *deployments* we may do that process without any
+downtime.
+
+A Kubernetes deployment is another kind of controller which manages
+replica sets (in a similar way as replica sets manage pods).
+
+An example:
 
 ```
 $ kubectl -n kubernetes-101 apply -f - <<EOT
@@ -1211,7 +1364,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: sample-website
-  namespace: kubernetes-101
 spec:
   selector:
     app: sample-website
@@ -1222,86 +1374,57 @@ spec:
       protocol: TCP
 
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: htdocs-pvc
-  namespace: kubernetes-101
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 42Gi
-
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sample-website
-  namespace: kubernetes-101
-  labels:
-    app: sample-website
 spec:
-  replicas: 1
+  replicas: 20
   selector:
     matchLabels:
       app: sample-website
   template:
     metadata:
-      namespace: kubernetes-101
       labels:
         app: sample-website
     spec:
       containers:
         - name: nginx
-          image: nginx:latest
-          volumeMounts:
-            - name: htdocs
-              mountPath: /usr/share/nginx/html
-        - name: shell
-          image: busybox:latest
-          stdin: true
-          tty: true
-          volumeMounts:
-            - name: htdocs
-              mountPath: /usr/share/nginx/html
-      volumes:
-        - name: htdocs
-          persistentVolumeClaim:
-            claimName: htdocs-pvc
+          image: nginx:1.14
 EOT
 service/sample-website created
-persistentvolumeclaim/htdocs-pvc unchanged
 deployment.apps/sample-website created
 $
 ```
 
-At some point the deployment will be created:
+We have just created a deployment controller in the Kubernetes control
+plane, which hs itself created a replica set controller object. The
+replica set controller is now busy spawning pods:
 
 ```
-$ kubectl -n kubernetes-101 get deployments
+$ kubectl -n kubernetes-101 get deployment
 NAME             READY   UP-TO-DATE   AVAILABLE   AGE
-sample-website   1/1     1            1           49s
+sample-website   19/20   20           19          14s
+$ kubectl -n kubernetes-101 get deployment
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+sample-website   20/20   20           20          23s
 $
 ```
 
-The Kubernetes deployment has created another Kubernetes object: A
-*replica set*. Replica sets ensure that at any given moment the
-desired number of copies of a given pod are alive (one, in our
-example).
+The deployment controller keeps track of its associated replica set
+controller:
 
 ```
 $ kubectl -n kubernetes-101 describe deployment sample-website
 Name:                   sample-website
 Namespace:              kubernetes-101
-CreationTimestamp:      Fri, 01 Mar 2019 13:17:29 +0000
-Labels:                 app=sample-website
+CreationTimestamp:      Mon, 11 Mar 2019 14:15:53 +0000
+Labels:                 <none>
 Annotations:            deployment.kubernetes.io/revision: 1
                         kubectl.kubernetes.io/last-applied-configuration:
-                          {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"sample-website"},"name":"sample-website","namesp...
+                          {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"sample-website","namespace":"kubernetes-101"},"spec":{"re...
 Selector:               app=sample-website
-Replicas:               1 desired | 1 updated | 1 total | 1 available | 0 unavailable
+Replicas:               20 desired | 20 updated | 20 total | 20 available | 0 unavailable
 StrategyType:           RollingUpdate
 MinReadySeconds:        0
 RollingUpdateStrategy:  25% max unavailable, 25% max surge
@@ -1309,108 +1432,116 @@ Pod Template:
   Labels:  app=sample-website
   Containers:
    nginx:
-    Image:        nginx:latest
+    Image:        nginx:1.14
     Port:         <none>
     Host Port:    <none>
     Environment:  <none>
-    Mounts:
-      /usr/share/nginx/html from htdocs (rw)
-   shell:
-    Image:        busybox:latest
-    Port:         <none>
-    Host Port:    <none>
-    Environment:  <none>
-    Mounts:
-      /usr/share/nginx/html from htdocs (rw)
-  Volumes:
-   htdocs:
-    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
-    ClaimName:  htdocs-pvc
-    ReadOnly:   false
+    Mounts:       <none>
+  Volumes:        <none>
 Conditions:
   Type           Status  Reason
   ----           ------  ------
   Available      True    MinimumReplicasAvailable
   Progressing    True    NewReplicaSetAvailable
 OldReplicaSets:  <none>
-NewReplicaSet:   sample-website-76f87f4b57 (1/1 replicas created)
+NewReplicaSet:   sample-website-85f9b58bc5 (20/20 replicas created)
 Events:
-  Type    Reason             Age    From                   Message
-  ----    ------             ----   ----                   -------
-  Normal  ScalingReplicaSet  2m16s  deployment-controller  Scaled up replica set sample-website-76f87f4b57 to 1
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  ScalingReplicaSet  45s   deployment-controller  Scaled up replica set sample-website-85f9b58bc5 to 20
 $
 ```
 
-Our replica set is alive and well:
-
-```
-$ kubectl -n kubernetes-101 describe replicaset sample-website-76f87f4b57
-Name:           sample-website-76f87f4b57
-Namespace:      kubernetes-101
-Selector:       app=sample-website,pod-template-hash=76f87f4b57
-Labels:         app=sample-website
-                pod-template-hash=76f87f4b57
-Annotations:    deployment.kubernetes.io/desired-replicas: 1
-                deployment.kubernetes.io/max-replicas: 2
-                deployment.kubernetes.io/revision: 1
-Controlled By:  Deployment/sample-website
-Replicas:       1 current / 1 desired
-Pods Status:    1 Running / 0 Waiting / 0 Succeeded / 0 Failed
-Pod Template:
-  Labels:  app=sample-website
-           pod-template-hash=76f87f4b57
-  Containers:
-   nginx:
-    Image:        nginx:latest
-    Port:         <none>
-    Host Port:    <none>
-    Environment:  <none>
-    Mounts:
-      /usr/share/nginx/html from htdocs (rw)
-   shell:
-    Image:        busybox:latest
-    Port:         <none>
-    Host Port:    <none>
-    Environment:  <none>
-    Mounts:
-      /usr/share/nginx/html from htdocs (rw)
-  Volumes:
-   htdocs:
-    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
-    ClaimName:  htdocs-pvc
-    ReadOnly:   false
-Events:
-  Type    Reason            Age    From                   Message
-  ----    ------            ----   ----                   -------
-  Normal  SuccessfulCreate  3m48s  replicaset-controller  Created pod: sample-website-76f87f4b57-jw6wg
-$
-```
-
-... and it has created one pod, using the template we provided in the
-Kubernetes deployment object:
+All pods created by the replica set controller are now alive and well:
 
 ```
 $ kubectl -n kubernetes-101 get pods
 NAME                              READY   STATUS    RESTARTS   AGE
-sample-website-76f87f4b57-jw6wg   2/2     Running   0          72s
+sample-website-85f9b58bc5-256zb   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-4dczn   1/1     Running   0          3m24s
+sample-website-85f9b58bc5-4mrvd   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-6r7z2   1/1     Running   0          3m25s
+sample-website-85f9b58bc5-b7sj6   1/1     Running   0          3m26s
+sample-website-85f9b58bc5-fdffr   1/1     Running   0          3m29s
+sample-website-85f9b58bc5-k67nr   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-kblmf   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-kgpvr   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-klxf8   1/1     Running   0          3m29s
+sample-website-85f9b58bc5-llx6h   1/1     Running   0          3m26s
+sample-website-85f9b58bc5-mvj4q   1/1     Running   0          3m26s
+sample-website-85f9b58bc5-nnscx   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-pbswh   1/1     Running   0          3m23s
+sample-website-85f9b58bc5-r9r5r   1/1     Running   0          3m25s
+sample-website-85f9b58bc5-s6lm6   1/1     Running   0          3m26s
+sample-website-85f9b58bc5-t4fsd   1/1     Running   0          3m29s
+sample-website-85f9b58bc5-tcjjm   1/1     Running   0          3m28s
+sample-website-85f9b58bc5-zg54d   1/1     Running   0          3m26s
+sample-website-85f9b58bc5-zscl9   1/1     Running   0          3m26s
 $
-```
-
-As before, the Kubernetes service object exists, and has an external
-IP address attached to it:
 
 ```
-$ kubectl -n kubernetes-101 get svc
-NAME                      TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)        AGE
-sample-external-service   LoadBalancer   10.104.216.178   136.156.132.163   80:31369/TCP   30m
-sample-website            LoadBalancer   10.101.181.86    136.156.132.232   80:30581/TCP   4m34s
-$
-```
 
-And everything still works:
+If we want to update the version of our software, we may now edit the
+deployment controller. Once the edit is applied, the deployment
+controller will create a new replica set controller with the updated
+template:
 
 ```
-$ env http_proxy= curl http://136.156.132.232
-Welcome to the European Weather Cloud
+$ kubectl -n kubernetes-101 edit deployment sample-website
+deployment.extensions/sample-website edited
+$ kubectl -n kubernetes-101 get pods
+NAME                              READY   STATUS              RESTARTS   AGE
+sample-website-7f94d577f8-4brk2   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-68wjb   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-7twxp   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-bw9xk   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-cbjkf   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-m4nf7   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-m5n6k   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-nbmq7   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-s5ndw   0/1     ContainerCreating   0          1s
+sample-website-7f94d577f8-ztdxn   0/1     ContainerCreating   0          1s
+sample-website-85f9b58bc5-256zb   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-4dczn   1/1     Terminating         0          4m7s
+sample-website-85f9b58bc5-4mrvd   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-6r7z2   1/1     Terminating         0          4m8s
+sample-website-85f9b58bc5-b7sj6   1/1     Running             0          4m9s
+sample-website-85f9b58bc5-fdffr   1/1     Running             0          4m12s
+sample-website-85f9b58bc5-k67nr   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-kblmf   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-kgpvr   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-klxf8   1/1     Running             0          4m12s
+sample-website-85f9b58bc5-llx6h   1/1     Running             0          4m9s
+sample-website-85f9b58bc5-mvj4q   1/1     Running             0          4m9s
+sample-website-85f9b58bc5-nnscx   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-pbswh   0/1     Terminating         0          4m6s
+sample-website-85f9b58bc5-r9r5r   1/1     Terminating         0          4m8s
+sample-website-85f9b58bc5-s6lm6   1/1     Running             0          4m9s
+sample-website-85f9b58bc5-t4fsd   1/1     Running             0          4m12s
+sample-website-85f9b58bc5-tcjjm   1/1     Running             0          4m11s
+sample-website-85f9b58bc5-zg54d   1/1     Terminating         0          4m9s
+sample-website-85f9b58bc5-zscl9   1/1     Running             0          4m9s
+$ kubectl -n kubernetes-101 get pods
+NAME                              READY   STATUS    RESTARTS   AGE
+sample-website-7f94d577f8-4brk2   1/1     Running   0          24s
+sample-website-7f94d577f8-4nrnd   1/1     Running   0          21s
+sample-website-7f94d577f8-68wjb   1/1     Running   0          24s
+sample-website-7f94d577f8-7twxp   1/1     Running   0          24s
+sample-website-7f94d577f8-84gvb   1/1     Running   0          21s
+sample-website-7f94d577f8-9zhg7   1/1     Running   0          21s
+sample-website-7f94d577f8-bw9xk   1/1     Running   0          24s
+sample-website-7f94d577f8-cbjkf   1/1     Running   0          24s
+sample-website-7f94d577f8-jwz7b   1/1     Running   0          20s
+sample-website-7f94d577f8-kz4jh   1/1     Running   0          21s
+sample-website-7f94d577f8-l9nhs   1/1     Running   0          21s
+sample-website-7f94d577f8-m4nf7   1/1     Running   0          24s
+sample-website-7f94d577f8-m5n6k   1/1     Running   0          24s
+sample-website-7f94d577f8-nbmq7   1/1     Running   0          24s
+sample-website-7f94d577f8-nqnnp   1/1     Running   0          21s
+sample-website-7f94d577f8-nxwr8   1/1     Running   0          21s
+sample-website-7f94d577f8-rhrkk   1/1     Running   0          20s
+sample-website-7f94d577f8-s5ndw   1/1     Running   0          24s
+sample-website-7f94d577f8-x4m82   1/1     Running   0          21s
+sample-website-7f94d577f8-ztdxn   1/1     Running   0          24s
 $
 ```
