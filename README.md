@@ -803,6 +803,125 @@ $
 ```
 
 
+## Load-balancing with services
+
+When a Kubernetes service has several pod candidates that it may
+forward requests to, it load-balances requests.
+
+
+Let's clean up first:
+
+```
+$ kubectl -n kubernetes-101 delete pods --all
+$ kubectl -n kubernetes-101 delete services --all
+```
+
+We now defice two pods identified by the same set of labels, and a
+service that selects a target pod based on those same labels:
+
+
+```
+$ kubectl -n kubernetes-101 apply -f - <<EOT
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-website-1
+  namespace: kubernetes-101
+  labels:
+    app: web-server
+spec:
+  containers:
+    - name: nginx
+      image: nginx:latest
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-website-2
+  namespace: kubernetes-101
+  labels:
+    app: web-server
+spec:
+  containers:
+    - name: nginx
+      image: nginx:latest
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-external-service
+  namespace: kubernetes-101
+spec:
+  selector:
+    app: web-server
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+EOT
+pod/sample-website-1 created
+pod/sample-website-2 created
+service/sample-external-service created
+$
+```
+
+We now put some content on each of the pods, so that we may identify
+them:
+
+```
+$ kubectl -n kubernetes-101 exec -it sample-website-1 sh
+# echo $POD_NAME
+sample-website-1
+# echo $POD_NAME > /usr/share/nginx/html/index.html
+# exit
+$
+```
+
+```
+$ kubectl -n kubernetes-101 exec -it sample-website-2 sh
+# echo $POD_NAME
+sample-website-2
+# echo $POD_NAME > /usr/share/nginx/html/index.html
+# exit
+$
+```
+
+Once the service is ready, we see the load-balancing done by
+Kubernetes:
+
+```
+$ kubectl -n kubernetes-101 get svc
+NAME                      TYPE           CLUSTER-IP       EXTERNAL-IP      PORT(S)        AGE
+sample-external-service   LoadBalancer   10.111.125.126   136.156.132.97   80:31041/TCP   97s
+$ env - /usr/bin/curl http://136.156.132.97
+sample-website-1
+$ env - /usr/bin/curl http://136.156.132.97
+sample-website-2
+$ env - /usr/bin/curl http://136.156.132.97
+sample-website-1
+$ env - /usr/bin/curl http://136.156.132.97
+sample-website-1
+$ env - /usr/bin/curl http://136.156.132.97
+sample-website-2
+$
+```
+
 
 ## Volumes
 
@@ -880,6 +999,17 @@ $ env http_proxy= curl http://136.156.132.232/
 Welcome to the European Weather Cloud
 $
 ```
+
+The life-time of this Kubernetes volume objects, however, does not go
+further than the life-time of the pod objects in which they are
+defined. In fact we cannot create volume objects without creating a pod:
+
+```
+$ kubectl get volume
+error: the server doesn't have a resource type "volume"
+$
+```
+
 
 ## Persistent volumes
 
