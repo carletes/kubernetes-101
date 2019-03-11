@@ -380,7 +380,7 @@ We use init containers for those two purposes:
       initContainers:
         - name: collectstatic
           image: ecmwf/webdev-django:feature-hello-cloud
-		  ["python", "/code/apps/manage.py", "collectstatic", "--no-input", "--no-color"]
+		  command: ["python", "/code/apps/manage.py", "collectstatic", "--no-input", "--no-color"]
           volumeMounts:
             - name: staticfiles
               mountPath: /data/django/staticfiles
@@ -668,6 +668,7 @@ appropriate DNS add-on installed (most have):
 / # wget -O - -q http://my-super-web-site.kubernetes-101.svc.cluster.local.
 [..]
 ```
+
 
 ## Cloud provider integration
 
